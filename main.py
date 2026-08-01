@@ -20,11 +20,12 @@ def home():
     return "Instagram Professional Userbot Service - Fully Operational", 200
 
 # ---------------------------------------------------------
-# 2. BULLETPROOF MULTI-TIER AI ENGINE (Gemini + Pollinations)
+# 2. ZERO RATE-LIMIT MULTI-TIER AI ENGINE (Groq + Pollinations + Gemini)
 # ---------------------------------------------------------
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-ai_client = None
 
+ai_client = None
 if GEMINI_API_KEY:
     try:
         ai_client = genai.Client(api_key=GEMINI_API_KEY)
@@ -33,8 +34,35 @@ if GEMINI_API_KEY:
         print(f"[INIT ERROR] Gemini SDK setup failed: {e}", flush=True)
 
 
-def get_backup_ai(prompt: str) -> str:
-    """Robust OpenAI-compatible backup via Pollinations API."""
+def get_groq_ai(prompt: str) -> str:
+    """Primary High-Speed AI via Groq API (Llama 3.3 70B)."""
+    if not GROQ_API_KEY:
+        return None
+    try:
+        url = "https://api.groq.com/openai/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {GROQ_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        data = {
+            "model": "llama-3.3-70b-versatile",
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.7,
+            "max_tokens": 1000
+        }
+        res = requests.post(url, headers=headers, json=data, timeout=12)
+        if res.status_code == 200:
+            result = res.json()
+            return result['choices'][0]['message']['content'].strip()
+        else:
+            print(f"[GROQ ERROR] Status Code: {res.status_code} | {res.text}", flush=True)
+    except Exception as err:
+        print(f"[GROQ FAIL] {err}", flush=True)
+    return None
+
+
+def get_pollinations_openai(prompt: str) -> str:
+    """Secondary AI Engine (OpenAI Model Proxy via Pollinations)."""
     try:
         encoded_prompt = urllib.parse.quote(prompt)
         url = f"https://text.pollinations.ai/{encoded_prompt}?model=openai"
@@ -42,29 +70,45 @@ def get_backup_ai(prompt: str) -> str:
         if res.status_code == 200 and res.text.strip():
             return res.text.strip()
     except Exception as err:
-        print(f"[BACKUP AI ERROR] {err}", flush=True)
-    return "AI services are currently experiencing high load. Please try again shortly!"
+        print(f"[POLLINATIONS ERROR] {err}", flush=True)
+    return None
+
+
+def get_gemini_ai(prompt: str) -> str:
+    """Tertiary Backup AI Engine (Gemini 2.0 Flash)."""
+    if ai_client:
+        try:
+            response = ai_client.models.generate_content(
+                model='gemini-2.0-flash',
+                contents=prompt,
+            )
+            if response and response.text and response.text.strip():
+                return response.text.strip()
+        except Exception as err:
+            print(f"[GEMINI FAIL] {err}", flush=True)
+    return None
 
 
 def generate_ai_response(prompt: str) -> str:
-    """Primary Gemini engine with instant self-healing fallback."""
-    if ai_client:
-        try:
-            for model_name in ['gemini-2.0-flash', 'gemini-1.5-flash']:
-                try:
-                    response = ai_client.models.generate_content(
-                        model=model_name,
-                        contents=prompt,
-                    )
-                    if response and response.text and response.text.strip():
-                        return response.text.strip()
-                except Exception:
-                    continue
-        except Exception as err:
-            print(f"[GEMINI FAIL] Switching to Backup AI... Error: {err}", flush=True)
+    """Multi-Tier Auto Switcher: Groq -> Pollinations (OpenAI) -> Gemini."""
+    # Tier 1: Groq
+    output = get_groq_ai(prompt)
+    if output:
+        return output
 
-    print("[AI SYSTEM] Routing to Backup AI Engine...", flush=True)
-    return get_backup_ai(prompt)
+    # Tier 2: Pollinations OpenAI
+    print("[AI SYSTEM] Groq unavailable/unconfigured. Switching to Pollinations OpenAI...", flush=True)
+    output = get_pollinations_openai(prompt)
+    if output:
+        return output
+
+    # Tier 3: Gemini Backup
+    print("[AI SYSTEM] Switching to Gemini Fallback Engine...", flush=True)
+    output = get_gemini_ai(prompt)
+    if output:
+        return output
+
+    return "AI server busy, please try asking again in a moment!"
 
 
 def send_split_message(client, text: str, thread_id: str, max_length: int = 900):
@@ -119,7 +163,6 @@ def start_bot_loop():
         print(f"[AUTHENTICATION FAILED] Could not load session settings: {auth_err}", flush=True)
         return
 
-    # Fetch authenticated bot user ID dynamically
     my_user_id = None
     try:
         my_user_id = str(client.user_id)
@@ -144,7 +187,7 @@ def start_bot_loop():
                 try:
                     thread_id = str(thread.id)
 
-                    # 🛑 STRICT GROUP FILTER: Ignore group chats entirely
+                    # Ignore group chats
                     is_group = (
                         getattr(thread, 'is_group', False) or 
                         getattr(thread, 'thread_type', '') == 'group' or
@@ -161,11 +204,9 @@ def start_bot_loop():
                     msg_id = str(last_msg.id)
                     sender_id = str(last_msg.user_id)
 
-                    # Ignore already processed messages
                     if msg_id in processed_message_ids:
                         continue
 
-                    # Timestamp check (Ignore older messages prior to boot)
                     msg_ts = 0
                     if hasattr(last_msg, 'timestamp') and last_msg.timestamp:
                         try:
@@ -184,7 +225,7 @@ def start_bot_loop():
                     is_self_message = (my_user_id and sender_id == my_user_id)
                     now = time.time()
 
-                    # 🏓 COMMAND 1: .ping (Self + Others allowed)
+                    # 🏓 COMMAND 1: .ping
                     if text_content.lower() == ".ping":
                         start_ping = time.time()
                         ping_time = round((time.time() - start_ping) * 1000, 2)
@@ -192,25 +233,25 @@ def start_bot_loop():
                         reply_text = f"🏓 **Pong!**\n⚡ Latency: `{ping_time}ms`\n⏱️ Uptime: `{uptime_sec}s`"
                         client.direct_send(reply_text, thread_ids=[thread_id])
                         processed_message_ids.add(msg_id)
-                        print(f"[PING SENT] Triggered by {sender_id} (Is Self: {is_self_message})", flush=True)
+                        print(f"[PING SENT] Triggered by {sender_id}", flush=True)
 
-                    # 📊 COMMAND 2: .status (Self + Others allowed)
+                    # 📊 COMMAND 2: .status
                     elif text_content.lower() == ".status":
                         uptime_min = round((time.time() - START_TIME) / 60, 1)
                         status_text = (
                             "🤖 **Professional Userbot Status**\n"
                             "----------------------------\n"
                             f"✅ **State:** Fully Operational\n"
-                            f"🧠 **AI Backend:** Multi-Tier Active\n"
+                            f"🧠 **AI Engine:** Groq (Llama 3.3 70B) / Pollinations OpenAI\n"
                             f"⏱️ **Uptime:** {uptime_min} Minutes\n"
                             f"📩 **Processed DMs:** {len(processed_message_ids)}\n"
                             "----------------------------"
                         )
                         client.direct_send(status_text, thread_ids=[thread_id])
                         processed_message_ids.add(msg_id)
-                        print(f"[STATUS SENT] Triggered by {sender_id} (Is Self: {is_self_message})", flush=True)
+                        print(f"[STATUS SENT] Triggered by {sender_id}", flush=True)
 
-                    # 🤖 COMMAND 3: .ai <query> (Self + Others allowed)
+                    # 🤖 COMMAND 3: .ai <query>
                     elif text_content.lower().startswith(".ai "):
                         query = text_content[4:].strip()
                         print(f"[AI COMMAND] Sender: {sender_id} (Self: {is_self_message}) | Query: {query}", flush=True)
@@ -224,10 +265,9 @@ def start_bot_loop():
                         except Exception as send_err:
                             print(f"[SEND ERROR] Failed to send AI response: {send_err}", flush=True)
 
-                    # 📩 ROUTE B: Standard Auto-Reply (STRICTLY IGNORES SELF)
+                    # 📩 ROUTE B: Auto-Reply (Ignores self messages)
                     else:
                         if is_self_message:
-                            # Tu khud normal message karega toh silently ignore, auto reply nahi jayega
                             processed_message_ids.add(msg_id)
                             continue
 
@@ -270,3 +310,4 @@ bot_thread.start()
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+            

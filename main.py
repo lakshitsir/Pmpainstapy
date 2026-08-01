@@ -49,7 +49,6 @@ def generate_ai_response(prompt: str) -> str:
     """Primary Gemini 2.5 Flash generator with auto-fallback."""
     if ai_client:
         try:
-            # Using current 2026 stable model string
             response = ai_client.models.generate_content(
                 model='gemini-2.5-flash',
                 contents=prompt,
@@ -75,7 +74,7 @@ bot_initialized = False
 def start_bot_loop():
     global bot_initialized
     if bot_initialized:
-        print("[SYSTEM] Bot thread is already active in another worker. Skipping...", flush=True)
+        print("[SYSTEM] Bot thread already running. Skipping duplicate thread...", flush=True)
         return
     bot_initialized = True
 
@@ -83,15 +82,14 @@ def start_bot_loop():
 
     raw_session = os.environ.get("INSTA_SESSION_JSON")
     if not raw_session:
-        print("[CRITICAL ERROR] INSTA_SESSION_JSON environment variable missing!", flush=True)
+        print("[CRITICAL ERROR] INSTA_SESSION_JSON missing in Environment Variables!", flush=True)
         return
 
     client = Client()
-    # Safe random delays between request actions
     client.delay_range = [3, 6]
 
     try:
-        print("[AUTHENTICATION] Parsing Instagram Session Cookies...", flush=True)
+        print("[AUTHENTICATION] Injecting Instagram Session JSON...", flush=True)
         try:
             decoded = base64.b64decode(raw_session).decode('utf-8')
             session_dict = json.loads(decoded)
@@ -101,21 +99,23 @@ def start_bot_loop():
         client.set_settings(session_dict)
         print("[AUTHENTICATION SUCCESS] Session injected successfully!", flush=True)
     except Exception as auth_err:
-        print(f"[AUTHENTICATION FAILED] Couldn't load session: {auth_err}", flush=True)
+        print(f"[AUTHENTICATION FAILED] Could not load session settings: {auth_err}", flush=True)
         return
 
+    # LOCK STARTUP TIMESTAMP (Bot ignore karega isse purane saare DMs)
     startup_timestamp = time.time()
+    print(f"[SYSTEM READY] Bot Active! Only processing NEW messages received AFTER: {startup_timestamp}", flush=True)
 
     while True:
         try:
-            # Fetch unread threads
-            unread_threads = client.direct_threads(amount=10, selected_filter="unread")
+            # Fetch recent direct threads
+            threads = client.direct_threads(amount=10)
 
-            for thread in unread_threads:
+            for thread in threads:
                 try:
                     thread_id = str(thread.id)
 
-                    # 🛑 HARD GROUP CHECK: Reject all group DMs 100%
+                    # 🛑 STRICT GROUP FILTER: 100% Ignore Groups / Group Chats
                     is_group = (
                         getattr(thread, 'is_group', False) or 
                         getattr(thread, 'thread_type', '') == 'group' or
@@ -136,23 +136,29 @@ def start_bot_loop():
                     if sender_id == str(client.user_id):
                         continue
 
-                    # 🛑 FILTER 2: Ignore already handled messages
+                    # 🛑 FILTER 2: Ignore already responded message IDs
                     if msg_id in processed_message_ids:
                         continue
 
-                    # 🛑 FILTER 3: Ignore old messages prior to bot launch
-                    msg_time = last_msg.timestamp.timestamp() if hasattr(last_msg.timestamp, 'timestamp') else time.time()
-                    if msg_time < (startup_timestamp - 30):
-                        processed_message_ids.add(msg_id)
+                    # 🛑 FILTER 3: STRICT TIMESTAMP FILTER (Purana koi bhi message process nahi hoga)
+                    msg_ts = 0
+                    if hasattr(last_msg, 'timestamp') and last_msg.timestamp:
+                        try:
+                            msg_ts = last_msg.timestamp.timestamp()
+                        except Exception:
+                            msg_ts = 0
+
+                    if msg_ts > 0 and msg_ts < startup_timestamp:
+                        processed_message_ids.add(msg_id)  # Mark old message as seen in memory
                         continue
 
                     text_content = last_msg.text.strip() if last_msg.text else ""
                     if not text_content:
-                        continue  # Skip empty typing/reaction events
+                        continue
 
                     now = time.time()
 
-                    # ROUTE 1: Explicit AI Command (.ai <query>)
+                    # ROUTE A: Explicit AI Command (.ai <query>)
                     if text_content.lower().startswith(".ai "):
                         query = text_content[4:].strip()
                         print(f"[INBOUND AI COMMAND] Sender: {sender_id} | Query: {query}", flush=True)
@@ -161,12 +167,12 @@ def start_bot_loop():
                         try:
                             client.direct_send(ai_output, thread_ids=[thread_id])
                             processed_message_ids.add(msg_id)
-                            print(f"[AI REPLY SENT] Successfully responded to user {sender_id}", flush=True)
-                            time.sleep(4)  # Anti-Block Delay
+                            print(f"[AI REPLY SENT] Responded to user {sender_id}", flush=True)
+                            time.sleep(3)
                         except Exception as send_err:
-                            print(f"[SEND ERROR] Failed to deliver AI message: {send_err}", flush=True)
+                            print(f"[SEND ERROR] Failed to send AI response: {send_err}", flush=True)
 
-                    # ROUTE 2: Standard Auto-Reply (Inbound Only, 1 Hr Cooldown)
+                    # ROUTE B: Standard Auto-Reply (Private 1-on-1 DM, 1 Hr Cooldown)
                     else:
                         last_replied = user_cooldowns.get(sender_id, 0)
                         if (now - last_replied) > COOLDOWN_PERIOD:
@@ -179,36 +185,35 @@ def start_bot_loop():
                                 client.direct_send(auto_text, thread_ids=[thread_id])
                                 user_cooldowns[sender_id] = now
                                 processed_message_ids.add(msg_id)
-                                print(f"[AUTO-REPLY SENT] Delivered to user {sender_id}", flush=True)
-                                time.sleep(4)  # Anti-Block Delay
+                                print(f"[AUTO-REPLY SENT] Sent to user {sender_id}", flush=True)
+                                time.sleep(3)
                             except Exception as send_err:
-                                print(f"[SEND ERROR] Failed to deliver auto-reply: {send_err}", flush=True)
+                                print(f"[SEND ERROR] Failed to send auto-reply: {send_err}", flush=True)
                         else:
                             processed_message_ids.add(msg_id)
 
                 except Exception as thread_err:
-                    print(f"[THREAD ERROR] Soft exception handled: {thread_err}", flush=True)
+                    print(f"[THREAD ERROR] Handled softly: {thread_err}", flush=True)
                     continue
 
             # Memory buffer cleanup
-            if len(processed_message_ids) > 1500:
+            if len(processed_message_ids) > 2000:
                 processed_message_ids.clear()
 
-            time.sleep(12)  # Healthy poll cycle interval
+            time.sleep(10)  # Polling interval
 
         except Exception as loop_err:
             print(f"[MAIN LOOP RECOVERY] Outer error caught safely: {loop_err}", flush=True)
-            time.sleep(20)
+            time.sleep(15)
 
 
 # ---------------------------------------------------------
-# 4. SERVICE INITIALIZATION (Gunicorn Compatible)
+# 4. SERVICE INITIALIZATION
 # ---------------------------------------------------------
-# Always run background worker thread regardless of WSGI server startup
 bot_thread = Thread(target=start_bot_loop, daemon=True)
 bot_thread.start()
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
-        
+    

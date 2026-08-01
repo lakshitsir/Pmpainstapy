@@ -43,7 +43,6 @@ def get_gemini_reply(prompt_text: str) -> str:
     if not ai_client:
         raise RuntimeError("Gemini AI Client is not initialized! Check GEMINI_API_KEY.")
     
-    # Using official valid model identifier
     response = ai_client.models.generate_content(
         model='gemini-2.0-flash',
         contents=prompt_text,
@@ -56,6 +55,7 @@ def get_gemini_reply(prompt_text: str) -> str:
 # ---------------------------------------------------------
 COOLDOWN_SECONDS = 3600  # 1 Hour per user cooldown
 cooldowns = {}           # Memory dictionary to track last replied timestamp per user
+processed_message_ids = set() # Prevent duplicate/infinite loop replies without marking Seen
 
 
 def run_instagram_bot():
@@ -67,14 +67,11 @@ def run_instagram_bot():
         return
 
     cl = Client()
-    
-    # Professional Random Delay config to avoid Rate Limits / Bans
     cl.delay_range = [2, 5]
 
     # Injecting Instagram Session Settings
     try:
         print("[BOT] Parsing INSTA_SESSION_JSON...")
-        # Check if Base64 encoded, else load raw JSON string
         try:
             decoded_bytes = base64.b64decode(raw_session_data)
             session_dict = json.loads(decoded_bytes.decode('utf-8'))
@@ -82,48 +79,75 @@ def run_instagram_bot():
             session_dict = json.loads(raw_session_data)
 
         cl.set_settings(session_dict)
-        print("[BOT] Session settings injected successfully into instagrapi.")
+        print("[BOT SUCCESS] Successfully authenticated using Session Cookies!")
     except Exception as err:
         print(f"[BOT SESSION ERROR] Failed to load session settings: {err}")
         return
 
-    # Bot Message Loop
+    bot_start_time = time.time()
+
     while True:
         try:
-            # Check unread direct threads (Only responds when someone messages you)
+            # Fetch pending threads
             threads = cl.direct_threads(amount=10, selected_filter="unread")
             
             for thread in threads:
                 thread_id = str(thread.id)
                 
+                # 🛑 STRICT CHECK 1: NO GROUP CHATS AT ALL
+                is_group_chat = (
+                    getattr(thread, 'is_group', False) or 
+                    getattr(thread, 'thread_type', '') == 'group' or
+                    len(getattr(thread, 'users', [])) > 1 or
+                    bool(getattr(thread, 'title', ''))
+                )
+
+                if is_group_chat:
+                    continue
+
                 if not thread.messages:
                     continue
                 
                 latest_msg = thread.messages[0]
+                msg_id = str(latest_msg.id)
                 user_id = str(latest_msg.user_id)
 
-                # Skip if the last message was sent by our own account
+                # 🛑 STRICT CHECK 2: SKIP OWN MESSAGES
                 if user_id == str(cl.user_id):
                     continue
 
+                # 🛑 STRICT CHECK 3: MEMORY CHECK (Skip already processed msgs)
+                if msg_id in processed_message_ids:
+                    continue
+
+                # 🛑 STRICT CHECK 4: IGNORE HISTORICAL MESSAGES BEFORE BOT START
+                msg_timestamp = latest_msg.timestamp.timestamp() if hasattr(latest_msg.timestamp, 'timestamp') else time.time()
+                if msg_timestamp < (bot_start_time - 60):
+                    processed_message_ids.add(msg_id)
+                    continue
+
                 msg_text = latest_msg.text if latest_msg.text else ""
+                
+                # Skip typing indicators / blank activity
+                if not msg_text.strip():
+                    continue
+
                 current_time = time.time()
 
-                # CASE A: AI Command Trigger (.ai <your query>)
+                # CASE A: Explicit AI Command Trigger (.ai <query>)
                 if msg_text.lower().startswith(".ai "):
                     query = msg_text[4:].strip()
                     print(f"[BOT AI REQUEST] From User {user_id}: {query}")
                     
                     try:
                         ai_reply = get_gemini_reply(query)
-                        # Mark thread read & send message directly to thread ID
-                        cl.direct_thread_mark_unread(thread_id)
                         cl.direct_send(ai_reply, thread_ids=[thread_id])
+                        processed_message_ids.add(msg_id)
                         print(f"[BOT AI SUCCESS] Replied to {user_id}")
                     except Exception as ai_err:
-                        print(f"[GEMINI/SEND ERROR] Failed to process .ai command: {ai_err}")
+                        print(f"[GEMINI/SEND ERROR] Failed to reply .ai command to {user_id}: {ai_err}")
 
-                # CASE B: Standard Auto-Reply (Only once every 1 hour when someone sends a msg)
+                # CASE B: Standard Auto-Reply (1 Hour per user cooldown)
                 else:
                     last_replied_time = cooldowns.get(user_id, 0)
                     
@@ -131,22 +155,27 @@ def run_instagram_bot():
                         auto_msg = (
                             "Lakshit is currently offline 🤧\n"
                             "This is an automated reply.\n\n"
-                            "(Tip: Send '.ai <your message>' to chat with my AI assistant!)"
+                            "(Tip: Send '.ai <your question>' to chat with AI!)"
                         )
                         try:
                             cl.direct_send(auto_msg, thread_ids=[thread_id])
-                            cooldowns[user_id] = current_time  # Update user's 1-hour timestamp
-                            print(f"[BOT AUTO-REPLY] Sent to User {user_id} (1hr cooldown activated)")
+                            cooldowns[user_id] = current_time
+                            processed_message_ids.add(msg_id)
+                            print(f"[BOT AUTO-REPLY] Sent to User {user_id}")
                         except Exception as send_err:
                             print(f"[SEND ERROR] Failed to send auto-reply to {user_id}: {send_err}")
                     else:
-                        print(f"[BOT COOLDOWN] Skipped User {user_id} - Within 1 hr window.")
+                        processed_message_ids.add(msg_id)
+                        print(f"[BOT COOLDOWN] Ignored User {user_id} (Within 1 hour window)")
 
-            # Sleep between polling cycles to keep CPU & Network requests safe
+            # Clean memory buffer periodically
+            if len(processed_message_ids) > 1000:
+                processed_message_ids.clear()
+
             time.sleep(15)
 
         except Exception as loop_err:
-            print(f"[BOT LOOP ERROR] Exception in main polling loop: {loop_err}")
+            print(f"[BOT LOOP ERROR] Outer loop exception caught: {loop_err}")
             time.sleep(30)
 
 
@@ -154,10 +183,7 @@ def run_instagram_bot():
 # 4. ENTRY POINT
 # ---------------------------------------------------------
 if __name__ == "__main__":
-    # Start Instagram Bot in a background thread
     bot_thread = Thread(target=run_instagram_bot, daemon=True)
     bot_thread.start()
-    
-    # Start Flask Server in main thread
     run_flask()
-        
+    

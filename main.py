@@ -1,160 +1,163 @@
 import os
-import time
 import json
+import time
+import base64
 import traceback
-import threading
+from threading import Thread
 from flask import Flask
-from instagrapi import Client
 from google import genai
+from instagrapi import Client
 
-# ==========================================
-# 1. FLASK WEB SERVER (For UptimeRobot/Render)
-# ==========================================
+# ---------------------------------------------------------
+# 1. FLASK DUMMY SERVER (Keep Render Web Service Alive)
+# ---------------------------------------------------------
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Status: Operational | Instagram Userbot Running!"
+    return "Instagram Userbot is Running & Live!", 200
 
-# ==========================================
-# 2. CONFIGURATION & ENV VARIABLES
-# ==========================================
-SESSION_JSON_STR = os.environ.get("INSTA_SESSION_JSON")
-GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
+def run_flask():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
 
-# Gemini Setup (New google-genai SDK)
+
+# ---------------------------------------------------------
+# 2. GEMINI AI CLIENT INITIALIZATION
+# ---------------------------------------------------------
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 ai_client = None
-if GEMINI_KEY:
+
+if GEMINI_API_KEY:
     try:
-        ai_client = genai.Client(api_key=GEMINI_KEY)
-        print("[INIT] Gemini AI Client initialized.")
+        ai_client = genai.Client(api_key=GEMINI_API_KEY)
+        print("[INIT] Gemini AI Client successfully initialized.")
     except Exception as e:
-        print(f"[WARNING] Gemini init failed: {e}")
-        traceback.print_exc()
+        print(f"[INIT ERROR] Failed to initialize Gemini Client: {e}")
 else:
-    print("[WARNING] GEMINI_API_KEY Missing!")
+    print("[INIT WARNING] GEMINI_API_KEY missing in Environment Variables!")
 
-cl = Client()
-cooldowns = {}
-COOLDOWN_SECONDS = 3600  # 1 Hour Cooldown per user
 
-# ==========================================
-# 3. HELPER FUNCTIONS
-# ==========================================
-def get_gemini_reply(prompt_text):
-    """Generates AI response using google-genai SDK."""
+def get_gemini_reply(prompt_text: str) -> str:
+    """Generates clean AI reply using Google GenAI SDK."""
     if not ai_client:
         raise RuntimeError("Gemini AI Client is not initialized! Check GEMINI_API_KEY.")
     
+    # Using official valid model identifier
     response = ai_client.models.generate_content(
-        model='gemini-2.5-flash',
+        model='gemini-2.0-flash',
         contents=prompt_text,
     )
-    return response.text
+    return response.text.strip()
 
-# ==========================================
-# 4. INSTAGRAM USERBOT MAIN LOOP
-# ==========================================
+
+# ---------------------------------------------------------
+# 3. INSTAGRAM USERBOT LOGIC
+# ---------------------------------------------------------
+COOLDOWN_SECONDS = 3600  # 1 Hour per user cooldown
+cooldowns = {}           # Memory dictionary to track last replied timestamp per user
+
+
 def run_instagram_bot():
     print("[BOT] Starting Instagram Userbot Service...")
     
-    if not SESSION_JSON_STR:
-        print("[BOT CRITICAL ERROR] INSTA_SESSION_JSON missing in Environment Variables!")
+    raw_session_data = os.environ.get("INSTA_SESSION_JSON")
+    if not raw_session_data:
+        print("[BOT CRITICAL ERROR] INSTA_SESSION_JSON is missing in Environment Variables!")
         return
 
-    # Direct Session Cookie Injection
-    logged_in = False
+    cl = Client()
+    
+    # Professional Random Delay config to avoid Rate Limits / Bans
+    cl.delay_range = [2, 5]
+
+    # Injecting Instagram Session Settings
     try:
         print("[BOT] Parsing INSTA_SESSION_JSON...")
-        session_data = json.loads(SESSION_JSON_STR)
-        sessionid = session_data.get("sessionid")
-        ds_user_id = session_data.get("ds_user_id")
-        csrftoken = session_data.get("csrftoken", "")
+        # Check if Base64 encoded, else load raw JSON string
+        try:
+            decoded_bytes = base64.b64decode(raw_session_data)
+            session_dict = json.loads(decoded_bytes.decode('utf-8'))
+        except Exception:
+            session_dict = json.loads(raw_session_data)
 
-        if not sessionid or not ds_user_id:
-            raise ValueError("sessionid ya ds_user_id missing hai JSON ke andar!")
-
-        print("[BOT] Injecting session settings into instagrapi...")
-        cl.set_settings({
-            "authorization_data": {
-                "sessionid": sessionid,
-                "ds_user_id": ds_user_id,
-                "csrftoken": csrftoken
-            }
-        })
-        cl.login_by_sessionid(sessionid)
-        logged_in = True
-        print("[BOT SUCCESS] Successfully authenticated using Session Cookies!")
-
-    except Exception as e:
-        print(f"[BOT SESSION ERROR] Session inject fail hua: {e}")
-        traceback.print_exc()
-
-    if not logged_in:
-        print("[BOT FATAL] Could not authenticate Instagram session. Stopping loop.")
+        cl.set_settings(session_dict)
+        print("[BOT] Session settings injected successfully into instagrapi.")
+    except Exception as err:
+        print(f"[BOT SESSION ERROR] Failed to load session settings: {err}")
         return
 
-    # Continuous Polling Loop
+    # Bot Message Loop
     while True:
         try:
-            # --- Direct Messages Check ---
-            threads = cl.direct_threads(amount=10)
+            # Check unread direct threads (Only responds when someone messages you)
+            threads = cl.direct_threads(amount=10, selected_filter="unread")
+            
             for thread in threads:
-                thread_id = thread.id
-                messages = thread.messages
+                thread_id = str(thread.id)
                 
-                if not messages:
+                if not thread.messages:
                     continue
-                    
-                last_msg = messages[0]
-                user_id = str(last_msg.user_id)
                 
-                # Skip self messages
+                latest_msg = thread.messages[0]
+                user_id = str(latest_msg.user_id)
+
+                # Skip if the last message was sent by our own account
                 if user_id == str(cl.user_id):
                     continue
 
-                msg_text = last_msg.text or ""
+                msg_text = latest_msg.text if latest_msg.text else ""
                 current_time = time.time()
 
-                # Case 1: AI Command (.ai <query>)
+                # CASE A: AI Command Trigger (.ai <your query>)
                 if msg_text.lower().startswith(".ai "):
                     query = msg_text[4:].strip()
                     print(f"[BOT AI REQUEST] From User {user_id}: {query}")
                     
                     try:
                         ai_reply = get_gemini_reply(query)
-                        cl.direct_answer(thread_id, ai_reply)
-                        print(f"[BOT AI SENT] Replied to {user_id}")
+                        # Mark thread read & send message directly to thread ID
+                        cl.direct_thread_mark_unread(thread_id)
+                        cl.direct_send(ai_reply, thread_ids=[thread_id])
+                        print(f"[BOT AI SUCCESS] Replied to {user_id}")
                     except Exception as ai_err:
-                        print(f"[GEMINI/SEND ERROR] Failed to reply .ai command to {user_id}: {ai_err}")
-                        traceback.print_exc()
+                        print(f"[GEMINI/SEND ERROR] Failed to process .ai command: {ai_err}")
 
-                # Case 2: Auto-Reply with 1-Hour Cooldown
+                # CASE B: Standard Auto-Reply (Only once every 1 hour when someone sends a msg)
                 else:
-                    last_replied = cooldowns.get(user_id, 0)
-                    if current_time - last_replied > COOLDOWN_SECONDS:
+                    last_replied_time = cooldowns.get(user_id, 0)
+                    
+                    if (current_time - last_replied_time) > COOLDOWN_SECONDS:
                         auto_msg = (
                             "Lakshit is currently offline 🤧\n"
                             "This is an automated reply.\n\n"
-                            "(Tip: Send '.ai <question>' to chat with AI!)"
+                            "(Tip: Send '.ai <your message>' to chat with my AI assistant!)"
                         )
-                        cl.direct_answer(thread_id, auto_msg)
-                        cooldowns[user_id] = current_time
-                        print(f"[BOT AUTO-REPLY] Sent to User {user_id}")
+                        try:
+                            cl.direct_send(auto_msg, thread_ids=[thread_id])
+                            cooldowns[user_id] = current_time  # Update user's 1-hour timestamp
+                            print(f"[BOT AUTO-REPLY] Sent to User {user_id} (1hr cooldown activated)")
+                        except Exception as send_err:
+                            print(f"[SEND ERROR] Failed to send auto-reply to {user_id}: {send_err}")
+                    else:
+                        print(f"[BOT COOLDOWN] Skipped User {user_id} - Within 1 hr window.")
 
-        except Exception as e:
-            print(f"[BOT LOOP ERROR] Outer loop exception caught: {e}")
-            traceback.print_exc()
+            # Sleep between polling cycles to keep CPU & Network requests safe
+            time.sleep(15)
 
-        time.sleep(25)  # Safe delay to prevent Instagram rate-limiting
+        except Exception as loop_err:
+            print(f"[BOT LOOP ERROR] Exception in main polling loop: {loop_err}")
+            time.sleep(30)
 
-# ==========================================
-# 5. START BACKGROUND THREAD & FLASK
-# ==========================================
-bot_thread = threading.Thread(target=run_instagram_bot, daemon=True)
-bot_thread.start()
 
+# ---------------------------------------------------------
+# 4. ENTRY POINT
+# ---------------------------------------------------------
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
-                        
+    # Start Instagram Bot in a background thread
+    bot_thread = Thread(target=run_instagram_bot, daemon=True)
+    bot_thread.start()
+    
+    # Start Flask Server in main thread
+    run_flask()
+        

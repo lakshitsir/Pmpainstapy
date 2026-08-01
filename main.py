@@ -1,165 +1,151 @@
 import os
 import time
-import random
 import threading
 from flask import Flask
 from instagrapi import Client
-from google import genai
-from google.genai import types
+import google.generativeai as genai
 
+# ==========================================
+# 1. FLASK WEB SERVER (For UptimeRobot/Render)
+# ==========================================
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Status: Operational", 200
+    return "Status: Operational | Instagram Userbot Running!"
 
-def run_bot():
-    time.sleep(3)
-    
-    ai = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
-    cl = Client()
-    
-    INSTA_USER = os.environ.get("INSTA_USER")
-    INSTA_PASS = os.environ.get("INSTA_PASS")
-    SESSION_FILE = "session.json"
+# ==========================================
+# 2. CONFIGURATION & ENV VARIABLES
+# ==========================================
+INSTA_USER = os.environ.get("INSTA_USER")
+INSTA_PASS = os.environ.get("INSTA_PASS")
+GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
 
-    # Silent Session Restore
+# Gemini Setup
+if GEMINI_KEY:
+    genai.configure(api_key=GEMINI_KEY)
+    model = genai.GenerativeModel("gemini-1.5-flash")
+else:
+    model = None
+    print("[WARNING] GEMINI_API_KEY Missing! AI features won't work.")
+
+# Instagrapi Client Initialization
+cl = Client()
+# Cooldown Tracker (Prevent Spam)
+cooldowns = {}
+COOLDOWN_SECONDS = 3600  # 1 Hour Cooldown per user
+
+# ==========================================
+# 3. HELPER FUNCTIONS
+# ==========================================
+def get_gemini_reply(prompt_text):
+    """Generates dynamic AI response via Gemini."""
+    if not model:
+        return "AI response is currently unavailable."
     try:
-        if os.path.exists(SESSION_FILE):
-            cl.load_settings(SESSION_FILE)
-            cl.login(INSTA_USER, INSTA_PASS)
-        else:
-            cl.login(INSTA_USER, INSTA_PASS)
-            cl.dump_settings(SESSION_FILE)
-    except Exception:
-        pass
+        response = model.generate_content(prompt_text)
+        return response.text
+    except Exception as e:
+        print(f"[GEMINI ERROR] {e}")
+        return "Kuch error aaya Gemini response fetch karne me!"
 
-    cooldowns = {}
+# ==========================================
+# 4. INSTAGRAM USERBOT MAIN LOOP
+# ==========================================
+def run_instagram_bot():
+    print("[BOT] Starting Instagram Userbot Service...")
+    
+    if not INSTA_USER or not INSTA_PASS:
+        print("[BOT CRITICAL ERROR] INSTA_USER ya INSTA_PASS Environment Variable missing hai!")
+        return
 
+    # Attempt Login
+    try:
+        print(f"[BOT] Attempting login for @{INSTA_USER}...")
+        cl.login(INSTA_USER, INSTA_PASS)
+        print("[BOT SUCCESS] Successfully logged in to Instagram!")
+    except Exception as e:
+        print(f"[BOT LOGIN ERROR] Login failed: {e}")
+        print("[BOT HINT] Check password, 2FA, or if Instagram requires Challenge Verification.")
+        return
+
+    # Continuous Polling Loop
     while True:
         try:
-            threads = cl.direct_threads(amount=5)
-            
+            # --- A. Check Unread Direct Messages ---
+            threads = cl.direct_threads(amount=10)
             for thread in threads:
-                # Strictly Private DMs (Ignore Group Chats)
-                if thread.is_group:
-                    continue
-
                 thread_id = thread.id
                 messages = thread.messages
-                if not messages: 
+                
+                if not messages:
                     continue
-
+                    
                 last_msg = messages[0]
                 user_id = str(last_msg.user_id)
-                text = last_msg.text.strip() if last_msg.text else ""
-
-                # Ignore own sent messages
-                if user_id == str(cl.user_id): 
+                
+                # Skip if message is sent by self
+                if str(last_msg.user_id) == str(cl.user_id):
                     continue
 
-                cmd = text.lower()
+                msg_text = last_msg.text or ""
+                current_time = time.time()
 
-                # 1. Story Mention Handler
-                if last_msg.item_type == 'story_share' or 'mentioned you in their story' in cmd:
-                    if time.time() - cooldowns.get(f"story_{user_id}", 0) > 3600:
-                        story_reply = "Thanks For Mentioning , Lakshit is Offline Currently He Will Check it 😁🙃"
-                        cl.direct_answer(thread_id, story_reply)
-                        cooldowns[f"story_{user_id}"] = time.time()
-                    continue
+                # Case 1: Gemini AI Command (.ai <question>)
+                if msg_text.lower().startswith(".ai "):
+                    query = msg_text[4:].strip()
+                    print(f"[BOT AI REQUEST] From User {user_id}: {query}")
+                    ai_reply = get_gemini_reply(query)
+                    cl.direct_answer(thread_id, ai_reply)
+                    print(f"[BOT AI SENT] Replied to {user_id}")
 
-                # 2. Command: .help
-                if cmd == ".help":
-                    help_txt = (
-                        "AI Management Cmds\n"
-                        "~\n"
-                        ".ai <query> - Ask Gemini AI\n"
-                        ".ai (reply to msg) - Context analysis / Follow up\n"
-                        ".status - Check system health\n"
-                        ".about - Profile details\n\n"
-                        "⚡ 🗿"
-                    )
-                    cl.direct_answer(thread_id, help_txt)
-                    continue
+                # Case 2: Normal Auto-Reply with 1-Hour Cooldown
+                else:
+                    last_replied = cooldowns.get(user_id, 0)
+                    if current_time - last_replied > COOLDOWN_SECONDS:
+                        auto_msg = (
+                            "Lakshitt is Currently Offlinee 🤧\n"
+                            "This Message is Generated by Userbot / Automated Bot 😁\n\n"
+                            "(Tip: Type '.ai <your question>' to chat with AI!)"
+                        )
+                        cl.direct_answer(thread_id, auto_msg)
+                        cooldowns[user_id] = current_time
+                        print(f"[BOT AUTO-REPLY] Sent to User {user_id}")
 
-                # 3. Command: .status
-                if cmd == ".status":
-                    cl.direct_answer(thread_id, "System status: Active\nLatency: Minimal\n\n⚡ 🗿")
-                    continue
+            # --- B. Check Story Mentions ---
+            # Instagrapi checks pending/mentions notifications
+            try:
+                notifications = cl.get_self_notification_feed()
+                for item in notifications.get("items", []):
+                    # Check if story mention notification
+                    if item.get("type") == 1 and "mentioned you in a story" in str(item.get("args", {}).get("text", "")):
+                        mention_user_id = str(item.get("args", {}).get("links", [{}])[0].get("id"))
+                        current_time = time.time()
+                        
+                        if current_time - cooldowns.get(f"story_{mention_user_id}", 0) > 600:  # 10 min cooldown for stories
+                            reply_text = "Thanks For Mentioning, Lakshit is Offline Currently He Will Check it 😁🙃"
+                            cl.direct_send(reply_text, user_ids=[int(mention_user_id)])
+                            cooldowns[f"story_{mention_user_id}"] = current_time
+                            print(f"[BOT STORY MENTION] Replied to User {mention_user_id}")
+            except Exception as e:
+                # Suppress notification parsing errors
+                pass
 
-                # 4. Command: .about
-                if cmd == ".about":
-                    about_txt = (
-                        "Lakshit (Kanu)\n"
-                        "Developer & Tech Specialist\n\n"
-                        "Send .ai <query> for automated responses.\n\n⚡ 🗿"
-                    )
-                    cl.direct_answer(thread_id, about_txt)
-                    continue
+        except Exception as e:
+            print(f"[BOT LOOP ERROR] {e}")
 
-                # 5. Command: .ai <query> (Supports Images & Replied Context)
-                if cmd.startswith(".ai"):
-                    query = text[3:].strip()
+        # Poll every 20 seconds to prevent rate-limiting
+        time.sleep(20)
 
-                    time.sleep(random.uniform(1.2, 2.2))
-                    contents = []
-                    
-                    replied_context = ""
-                    if hasattr(last_msg, 'replied_to_message') and last_msg.replied_to_message:
-                        ref_msg = last_msg.replied_to_message
-                        if ref_msg.text:
-                            replied_context = f"Replied-to Message: '{ref_msg.text}'"
-
-                    if last_msg.item_type == 'media' and last_msg.media:
-                        try:
-                            photo_path = cl.photo_download(last_msg.media.pk)
-                            with open(photo_path, 'rb') as img_file:
-                                image_bytes = img_file.read()
-                            contents.append(types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"))
-                            os.remove(photo_path)
-                        except Exception:
-                            pass
-
-                    system_prompt = (
-                        "You are an AI assistant representing Lakshit. "
-                        "Provide a concise, direct, professional, and intelligent response. "
-                        "Avoid filler text, cringe slangs, or excessive formatting."
-                    )
-
-                    full_prompt = f"{system_prompt}\n\n"
-                    if replied_context:
-                        full_prompt += f"{replied_context}\n"
-                    
-                    full_prompt += f"User Input: {query if query else 'Analyze the provided context/image.'}"
-                    contents.append(full_prompt)
-
-                    response = ai.models.generate_content(
-                        model='gemini-2.5-flash',
-                        contents=contents
-                    )
-
-                    reply_text = (response.text.strip() if response.text else "Unable to process.") + "\n\n⚡ 🗿"
-                    cl.direct_answer(thread_id, reply_text)
-                    continue
-
-                # 6. General Auto Reply (For Normal DMs) with 1-Hour Cooldown
-                if time.time() - cooldowns.get(f"auto_{user_id}", 0) > 3600:
-                    offline_reply = (
-                        "Lakshitt is Currently Offlinee 🤧\n"
-                        "This Message is Generated by Userbot / Automated Bot 😁"
-                    )
-                    cl.direct_answer(thread_id, offline_reply)
-                    cooldowns[f"auto_{user_id}"] = time.time()
-
-        except Exception:
-            # Silent Suppression
-            pass
-
-        time.sleep(random.randint(3, 4))
-
-bot_thread = threading.Thread(target=run_bot, daemon=True)
+# ==========================================
+# 5. START BACKGROUND THREAD & FLASK
+# ==========================================
+# Background thread for Insta Bot
+bot_thread = threading.Thread(target=run_instagram_bot, daemon=True)
 bot_thread.start()
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
-
+    # Render assigns dynamic port via PORT environment variable
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
+    

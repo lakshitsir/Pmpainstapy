@@ -10,7 +10,7 @@ from google import genai
 from instagrapi import Client
 
 # ---------------------------------------------------------
-# 1. FLASK WEB SERVER (Render Keep-Alive)
+# 1. FLASK WEB SERVER (Render Health Check)
 # ---------------------------------------------------------
 app = Flask(__name__)
 
@@ -33,7 +33,7 @@ if GEMINI_API_KEY:
 
 
 def get_pollinations_ai(prompt: str) -> str:
-    """Bulletproof Backup AI using Pollinations API."""
+    """Backup AI engine via Pollinations."""
     try:
         encoded_prompt = urllib.parse.quote(prompt)
         url = f"https://text.pollinations.ai/{encoded_prompt}?model=openai"
@@ -46,7 +46,7 @@ def get_pollinations_ai(prompt: str) -> str:
 
 
 def generate_ai_response(prompt: str) -> str:
-    """Primary Gemini 2.5 Flash generator with auto-fallback."""
+    """Primary Gemini generator with automatic fallback."""
     if ai_client:
         try:
             response = ai_client.models.generate_content(
@@ -65,19 +65,20 @@ def generate_ai_response(prompt: str) -> str:
 # ---------------------------------------------------------
 # 3. INSTAGRAM USERBOT LOGIC
 # ---------------------------------------------------------
-COOLDOWN_PERIOD = 3600  # 1 Hour auto-reply cooldown per user
+COOLDOWN_PERIOD = 3600  # 1 Hour cooldown
 user_cooldowns = {}
 processed_message_ids = set()
-bot_initialized = False
+bot_started = False
 
 
 def start_bot_loop():
-    global bot_initialized
-    if bot_initialized:
-        print("[SYSTEM] Bot thread already running. Skipping duplicate thread...", flush=True)
+    global bot_started
+    if bot_started:
         return
-    bot_initialized = True
+    bot_started = True
 
+    # Sleep 5s on boot to allow Gunicorn worker initialization
+    time.sleep(5)
     print("[SYSTEM] Booting Instagram Userbot Engine...", flush=True)
 
     raw_session = os.environ.get("INSTA_SESSION_JSON")
@@ -86,7 +87,7 @@ def start_bot_loop():
         return
 
     client = Client()
-    client.delay_range = [3, 6]
+    client.delay_range = [2, 4]
 
     try:
         print("[AUTHENTICATION] Injecting Instagram Session JSON...", flush=True)
@@ -102,20 +103,26 @@ def start_bot_loop():
         print(f"[AUTHENTICATION FAILED] Could not load session settings: {auth_err}", flush=True)
         return
 
-    # LOCK STARTUP TIMESTAMP (Bot ignore karega isse purane saare DMs)
+    # LOCK STARTUP TIMESTAMP
     startup_timestamp = time.time()
-    print(f"[SYSTEM READY] Bot Active! Only processing NEW messages received AFTER: {startup_timestamp}", flush=True)
+    print(f"[SYSTEM READY] Bot Active! Processing NEW messages received AFTER: {startup_timestamp}", flush=True)
 
     while True:
         try:
-            # Fetch recent direct threads
-            threads = client.direct_threads(amount=10)
+            # Fetch direct threads with timeout-safe call
+            threads = []
+            try:
+                threads = client.direct_threads(amount=8)
+            except Exception as fetch_err:
+                print(f"[FETCH ERROR] Could not retrieve inbox threads: {fetch_err}", flush=True)
+                time.sleep(15)
+                continue
 
             for thread in threads:
                 try:
                     thread_id = str(thread.id)
 
-                    # 🛑 STRICT GROUP FILTER: 100% Ignore Groups / Group Chats
+                    # Group Filter
                     is_group = (
                         getattr(thread, 'is_group', False) or 
                         getattr(thread, 'thread_type', '') == 'group' or
@@ -132,15 +139,15 @@ def start_bot_loop():
                     msg_id = str(last_msg.id)
                     sender_id = str(last_msg.user_id)
 
-                    # 🛑 FILTER 1: Ignore own messages
+                    # Ignore self
                     if sender_id == str(client.user_id):
                         continue
 
-                    # 🛑 FILTER 2: Ignore already responded message IDs
+                    # Ignore processed
                     if msg_id in processed_message_ids:
                         continue
 
-                    # 🛑 FILTER 3: STRICT TIMESTAMP FILTER (Purana koi bhi message process nahi hoga)
+                    # Timestamp check
                     msg_ts = 0
                     if hasattr(last_msg, 'timestamp') and last_msg.timestamp:
                         try:
@@ -149,7 +156,7 @@ def start_bot_loop():
                             msg_ts = 0
 
                     if msg_ts > 0 and msg_ts < startup_timestamp:
-                        processed_message_ids.add(msg_id)  # Mark old message as seen in memory
+                        processed_message_ids.add(msg_id)
                         continue
 
                     text_content = last_msg.text.strip() if last_msg.text else ""
@@ -158,7 +165,7 @@ def start_bot_loop():
 
                     now = time.time()
 
-                    # ROUTE A: Explicit AI Command (.ai <query>)
+                    # ROUTE A: Explicit AI Command
                     if text_content.lower().startswith(".ai "):
                         query = text_content[4:].strip()
                         print(f"[INBOUND AI COMMAND] Sender: {sender_id} | Query: {query}", flush=True)
@@ -168,11 +175,11 @@ def start_bot_loop():
                             client.direct_send(ai_output, thread_ids=[thread_id])
                             processed_message_ids.add(msg_id)
                             print(f"[AI REPLY SENT] Responded to user {sender_id}", flush=True)
-                            time.sleep(3)
+                            time.sleep(2)
                         except Exception as send_err:
                             print(f"[SEND ERROR] Failed to send AI response: {send_err}", flush=True)
 
-                    # ROUTE B: Standard Auto-Reply (Private 1-on-1 DM, 1 Hr Cooldown)
+                    # ROUTE B: Standard Auto-Reply
                     else:
                         last_replied = user_cooldowns.get(sender_id, 0)
                         if (now - last_replied) > COOLDOWN_PERIOD:
@@ -186,34 +193,31 @@ def start_bot_loop():
                                 user_cooldowns[sender_id] = now
                                 processed_message_ids.add(msg_id)
                                 print(f"[AUTO-REPLY SENT] Sent to user {sender_id}", flush=True)
-                                time.sleep(3)
+                                time.sleep(2)
                             except Exception as send_err:
                                 print(f"[SEND ERROR] Failed to send auto-reply: {send_err}", flush=True)
                         else:
                             processed_message_ids.add(msg_id)
 
                 except Exception as thread_err:
-                    print(f"[THREAD ERROR] Handled softly: {thread_err}", flush=True)
+                    print(f"[THREAD ERROR] Softly handled: {thread_err}", flush=True)
                     continue
 
-            # Memory buffer cleanup
-            if len(processed_message_ids) > 2000:
+            if len(processed_message_ids) > 1500:
                 processed_message_ids.clear()
 
-            time.sleep(10)  # Polling interval
+            time.sleep(12)
 
         except Exception as loop_err:
-            print(f"[MAIN LOOP RECOVERY] Outer error caught safely: {loop_err}", flush=True)
+            print(f"[MAIN LOOP RECOVERY] Handled outer error: {loop_err}", flush=True)
             time.sleep(15)
 
 
-# ---------------------------------------------------------
-# 4. SERVICE INITIALIZATION
-# ---------------------------------------------------------
+# Background thread start
 bot_thread = Thread(target=start_bot_loop, daemon=True)
 bot_thread.start()
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
-    
+        

@@ -3,7 +3,7 @@ import time
 import threading
 from flask import Flask
 from instagrapi import Client
-import google.generativeai as genai
+from google import genai
 
 # ==========================================
 # 1. FLASK WEB SERVER (For UptimeRobot/Render)
@@ -21,17 +21,18 @@ INSTA_USER = os.environ.get("INSTA_USER")
 INSTA_PASS = os.environ.get("INSTA_PASS")
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
 
-# Gemini Setup
+# Gemini Setup (New google-genai SDK)
+ai_client = None
 if GEMINI_KEY:
-    genai.configure(api_key=GEMINI_KEY)
-    model = genai.GenerativeModel("gemini-1.5-flash")
+    try:
+        ai_client = genai.Client(api_key=GEMINI_KEY)
+        print("[INIT] Gemini AI Client initialized.")
+    except Exception as e:
+        print(f"[WARNING] Gemini init failed: {e}")
 else:
-    model = None
-    print("[WARNING] GEMINI_API_KEY Missing! AI features won't work.")
+    print("[WARNING] GEMINI_API_KEY Missing!")
 
-# Instagrapi Client Initialization
 cl = Client()
-# Cooldown Tracker (Prevent Spam)
 cooldowns = {}
 COOLDOWN_SECONDS = 3600  # 1 Hour Cooldown per user
 
@@ -39,15 +40,18 @@ COOLDOWN_SECONDS = 3600  # 1 Hour Cooldown per user
 # 3. HELPER FUNCTIONS
 # ==========================================
 def get_gemini_reply(prompt_text):
-    """Generates dynamic AI response via Gemini."""
-    if not model:
+    """Generates AI response using google-genai SDK."""
+    if not ai_client:
         return "AI response is currently unavailable."
     try:
-        response = model.generate_content(prompt_text)
+        response = ai_client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt_text,
+        )
         return response.text
     except Exception as e:
         print(f"[GEMINI ERROR] {e}")
-        return "Kuch error aaya Gemini response fetch karne me!"
+        return "Sorry, error processing AI request."
 
 # ==========================================
 # 4. INSTAGRAM USERBOT MAIN LOOP
@@ -56,23 +60,30 @@ def run_instagram_bot():
     print("[BOT] Starting Instagram Userbot Service...")
     
     if not INSTA_USER or not INSTA_PASS:
-        print("[BOT CRITICAL ERROR] INSTA_USER ya INSTA_PASS Environment Variable missing hai!")
+        print("[BOT CRITICAL ERROR] INSTA_USER ya INSTA_PASS missing hai!")
         return
 
-    # Attempt Login
-    try:
-        print(f"[BOT] Attempting login for @{INSTA_USER}...")
-        cl.login(INSTA_USER, INSTA_PASS)
-        print("[BOT SUCCESS] Successfully logged in to Instagram!")
-    except Exception as e:
-        print(f"[BOT LOGIN ERROR] Login failed: {e}")
-        print("[BOT HINT] Check password, 2FA, or if Instagram requires Challenge Verification.")
+    # Login in background thread to prevent Gunicorn worker timeout
+    logged_in = False
+    for attempt in range(1, 4):
+        try:
+            print(f"[BOT] Attempting login for @{INSTA_USER} (Attempt {attempt})...")
+            cl.login(INSTA_USER, INSTA_PASS)
+            logged_in = True
+            print("[BOT SUCCESS] Successfully logged in to Instagram!")
+            break
+        except Exception as e:
+            print(f"[BOT LOGIN ERROR] Attempt {attempt} failed: {e}")
+            time.sleep(10)
+
+    if not logged_in:
+        print("[BOT FATAL] Could not log in to Instagram. Stopping loop.")
         return
 
     # Continuous Polling Loop
     while True:
         try:
-            # --- A. Check Unread Direct Messages ---
+            # --- Direct Messages Check ---
             threads = cl.direct_threads(amount=10)
             for thread in threads:
                 thread_id = thread.id
@@ -84,14 +95,14 @@ def run_instagram_bot():
                 last_msg = messages[0]
                 user_id = str(last_msg.user_id)
                 
-                # Skip if message is sent by self
-                if str(last_msg.user_id) == str(cl.user_id):
+                # Skip self messages
+                if user_id == str(cl.user_id):
                     continue
 
                 msg_text = last_msg.text or ""
                 current_time = time.time()
 
-                # Case 1: Gemini AI Command (.ai <question>)
+                # Case 1: AI Command (.ai <query>)
                 if msg_text.lower().startswith(".ai "):
                     query = msg_text[4:].strip()
                     print(f"[BOT AI REQUEST] From User {user_id}: {query}")
@@ -99,53 +110,31 @@ def run_instagram_bot():
                     cl.direct_answer(thread_id, ai_reply)
                     print(f"[BOT AI SENT] Replied to {user_id}")
 
-                # Case 2: Normal Auto-Reply with 1-Hour Cooldown
+                # Case 2: Auto-Reply with 1-Hour Cooldown
                 else:
                     last_replied = cooldowns.get(user_id, 0)
                     if current_time - last_replied > COOLDOWN_SECONDS:
                         auto_msg = (
-                            "Lakshitt is Currently Offlinee 🤧\n"
-                            "This Message is Generated by Userbot / Automated Bot 😁\n\n"
-                            "(Tip: Type '.ai <your question>' to chat with AI!)"
+                            "Lakshit is currently offline 🤧\n"
+                            "This is an automated reply.\n\n"
+                            "(Tip: Send '.ai <question>' to chat with AI!)"
                         )
                         cl.direct_answer(thread_id, auto_msg)
                         cooldowns[user_id] = current_time
                         print(f"[BOT AUTO-REPLY] Sent to User {user_id}")
 
-            # --- B. Check Story Mentions ---
-            # Instagrapi checks pending/mentions notifications
-            try:
-                notifications = cl.get_self_notification_feed()
-                for item in notifications.get("items", []):
-                    # Check if story mention notification
-                    if item.get("type") == 1 and "mentioned you in a story" in str(item.get("args", {}).get("text", "")):
-                        mention_user_id = str(item.get("args", {}).get("links", [{}])[0].get("id"))
-                        current_time = time.time()
-                        
-                        if current_time - cooldowns.get(f"story_{mention_user_id}", 0) > 600:  # 10 min cooldown for stories
-                            reply_text = "Thanks For Mentioning, Lakshit is Offline Currently He Will Check it 😁🙃"
-                            cl.direct_send(reply_text, user_ids=[int(mention_user_id)])
-                            cooldowns[f"story_{mention_user_id}"] = current_time
-                            print(f"[BOT STORY MENTION] Replied to User {mention_user_id}")
-            except Exception as e:
-                # Suppress notification parsing errors
-                pass
-
         except Exception as e:
             print(f"[BOT LOOP ERROR] {e}")
 
-        # Poll every 20 seconds to prevent rate-limiting
-        time.sleep(20)
+        time.sleep(25)  # Safe delay to prevent Instagram rate-limiting
 
 # ==========================================
 # 5. START BACKGROUND THREAD & FLASK
 # ==========================================
-# Background thread for Insta Bot
 bot_thread = threading.Thread(target=run_instagram_bot, daemon=True)
 bot_thread.start()
 
 if __name__ == "__main__":
-    # Render assigns dynamic port via PORT environment variable
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
-    
+            

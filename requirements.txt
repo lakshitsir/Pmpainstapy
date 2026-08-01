@@ -2,4 +2,4 @@ instagrapi
 google-genai
 flask
 gunicorn
-
+google.generativeai

@@ -20,7 +20,7 @@ def home():
     return "Instagram Professional Userbot Service - Fully Operational", 200
 
 # ---------------------------------------------------------
-# 2. ZERO RATE-LIMIT MULTI-TIER AI ENGINE (Groq + Pollinations + Gemini)
+# 2. ULTRA-FAST & LOW-TOKEN AI ENGINE (Groq + Pollinations + Gemini)
 # ---------------------------------------------------------
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
@@ -33,16 +33,17 @@ if GEMINI_API_KEY:
     except Exception as e:
         print(f"[INIT ERROR] Gemini SDK setup failed: {e}", flush=True)
 
+# 🎯 STRICT IDENTITY + ULTRA SHORT LOW-TOKEN SYSTEM PROMPT
 HUMAN_SYSTEM_PROMPT = (
-    "You are responding on behalf of Lakshit (Kanu) on Instagram DMs. "
-    "Chat naturally like a real Indian guy using chill Hinglish/English. "
-    "Keep responses concise, friendly, casual, and human-like. Do not sound like a rigid robot or corporate assistant. "
-    "Use subtle lowercase, natural phrasing, and casual tone."
+    "You are the official AI Assistant of Lakshit. "
+    "NEVER say you are Lakshit. You are only his AI Assistant. "
+    "Reply in super fast, polite, concise Hinglish. Use 'aap' or 'bhai'. "
+    "Keep answers under 15-20 words max to save speed and tokens."
 )
 
 
 def get_groq_ai(prompt: str) -> str:
-    """Primary High-Speed AI via Groq API (Llama 3.3 70B)."""
+    """Primary Ultra-Fast AI via Groq API."""
     if not GROQ_API_KEY:
         return None
     try:
@@ -57,10 +58,10 @@ def get_groq_ai(prompt: str) -> str:
                 {"role": "system", "content": HUMAN_SYSTEM_PROMPT},
                 {"role": "user", "content": prompt}
             ],
-            "temperature": 0.8,
-            "max_tokens": 600
+            "temperature": 0.5,
+            "max_tokens": 80  # Strict low-token budget for fast generation
         }
-        res = requests.post(url, headers=headers, json=data, timeout=12)
+        res = requests.post(url, headers=headers, json=data, timeout=5)
         if res.status_code == 200:
             result = res.json()
             return result['choices'][0]['message']['content'].strip()
@@ -72,12 +73,12 @@ def get_groq_ai(prompt: str) -> str:
 
 
 def get_pollinations_openai(prompt: str) -> str:
-    """Secondary AI Engine (OpenAI Model Proxy via Pollinations)."""
+    """Secondary Fast AI Engine (Pollinations)."""
     try:
         full_prompt = f"{HUMAN_SYSTEM_PROMPT}\n\nUser message: {prompt}"
         encoded_prompt = urllib.parse.quote(full_prompt)
         url = f"https://text.pollinations.ai/{encoded_prompt}?model=openai"
-        res = requests.get(url, timeout=12)
+        res = requests.get(url, timeout=5)
         if res.status_code == 200 and res.text.strip():
             return res.text.strip()
     except Exception as err:
@@ -102,31 +103,23 @@ def get_gemini_ai(prompt: str) -> str:
 
 
 def generate_ai_response(prompt: str) -> str:
-    """Multi-Tier Auto Switcher + Mandatory Tag appending."""
-    raw_response = None
-
-    # Tier 1: Groq
+    """Multi-Tier Auto Switcher + Signature Tag."""
     raw_response = get_groq_ai(prompt)
 
-    # Tier 2: Pollinations OpenAI
     if not raw_response:
-        print("[AI SYSTEM] Groq unavailable. Switching to Pollinations OpenAI...", flush=True)
         raw_response = get_pollinations_openai(prompt)
 
-    # Tier 3: Gemini Fallback
     if not raw_response:
-        print("[AI SYSTEM] Switching to Gemini Fallback Engine...", flush=True)
         raw_response = get_gemini_ai(prompt)
 
     if not raw_response:
-        raw_response = "abhi thoda busy hoon, baad me baat karta hoon!"
+        raw_response = "Lakshit bhai abhi busy hain, aapka message un tak pahuncha dunga!"
 
-    # Append signature tag
     return f"{raw_response}\n\n~ AI Generated"
 
 
 def send_split_message(client, text: str, thread_id: str, max_length: int = 900):
-    """Safely breaks down long responses to bypass Instagram character limitations."""
+    """Bypasses Instagram length limitations safely."""
     if len(text) <= max_length:
         client.direct_send(text, thread_ids=[thread_id])
         return
@@ -134,15 +127,14 @@ def send_split_message(client, text: str, thread_id: str, max_length: int = 900)
     chunks = [text[i:i + max_length] for i in range(0, len(text), max_length)]
     for chunk in chunks:
         client.direct_send(chunk, thread_ids=[thread_id])
-        time.sleep(1.5)
+        time.sleep(1)
 
 
 # ---------------------------------------------------------
 # 3. INSTAGRAM PROFESSIONAL USERBOT ENGINE
 # ---------------------------------------------------------
-COOLDOWN_PERIOD = 3600  # 1 Hour off duration when toggled off
-user_cooldowns = {}
-ai_disabled_threads = {}  # {thread_id: timestamp_when_disabled}
+COOLDOWN_PERIOD = 3600  # Exact 1 Hour
+ai_disabled_threads = {}
 processed_message_ids = set()
 bot_started = False
 
@@ -153,8 +145,8 @@ def start_bot_loop():
         return
     bot_started = True
 
-    time.sleep(5)
-    print("[SYSTEM] Booting Professional Instagram Userbot...", flush=True)
+    time.sleep(2)
+    print("[SYSTEM] Booting High-Speed Instagram Userbot...", flush=True)
 
     raw_session = os.environ.get("INSTA_SESSION_JSON")
     if not raw_session:
@@ -162,10 +154,9 @@ def start_bot_loop():
         return
 
     client = Client()
-    client.delay_range = [2, 4]
+    client.delay_range = [1, 2]
 
     try:
-        print("[AUTHENTICATION] Injecting Instagram Session JSON...", flush=True)
         try:
             decoded = base64.b64decode(raw_session).decode('utf-8')
             session_dict = json.loads(decoded)
@@ -175,7 +166,7 @@ def start_bot_loop():
         client.set_settings(session_dict)
         print("[AUTHENTICATION SUCCESS] Session injected successfully!", flush=True)
     except Exception as auth_err:
-        print(f"[AUTHENTICATION FAILED] Could not load session settings: {auth_err}", flush=True)
+        print(f"[AUTHENTICATION FAILED] {auth_err}", flush=True)
         return
 
     my_user_id = None
@@ -183,26 +174,25 @@ def start_bot_loop():
         my_user_id = str(client.user_id)
         print(f"[USERBOT IDENTITY] Logged in as User ID: {my_user_id}", flush=True)
     except Exception as e:
-        print(f"[USERBOT IDENTITY ERROR] Could not fetch user_id: {e}", flush=True)
+        print(f"[USERBOT IDENTITY ERROR] {e}", flush=True)
 
     startup_timestamp = time.time()
-    print(f"[SYSTEM READY] Bot Active! Processing messages received AFTER: {startup_timestamp}", flush=True)
 
     while True:
         try:
             threads = []
             try:
-                threads = client.direct_threads(amount=8)
+                threads = client.direct_threads(amount=6)
             except Exception as fetch_err:
-                print(f"[FETCH ERROR] Could not retrieve inbox threads: {fetch_err}", flush=True)
-                time.sleep(15)
+                print(f"[FETCH ERROR] {fetch_err}", flush=True)
+                time.sleep(5)
                 continue
 
             for thread in threads:
                 try:
                     thread_id = str(thread.id)
 
-                    # Ignore group chats
+                    # 🛡️ FULL GROUP PROTECTION
                     is_group = (
                         getattr(thread, 'is_group', False) or 
                         getattr(thread, 'thread_type', '') == 'group' or
@@ -240,28 +230,23 @@ def start_bot_loop():
                     is_self_message = (my_user_id and sender_id == my_user_id)
                     now = time.time()
 
-                    # ---------------------------------------------------------
-                    # 📜 OWNER PRIVILEGED & HELPER COMMANDS
-                    # ---------------------------------------------------------
-
-                    # 📖 COMMAND 0: .help
+                    # 📜 COMMANDS
                     if text_content.lower() == ".help":
                         help_menu = (
-                            "⚡ **Lakshit's Userbot Commands**\n"
+                            "⚡ **Lakshit's AI Assistant Commands**\n"
                             "----------------------------\n"
-                            "🔹 `.aioff` : Turn OFF auto AI for this chat for 1 hour\n"
-                            "🔹 `.aion` : Turn ON auto AI for this chat immediately\n"
-                            "🔹 `.summary` : Summarize recent messages in this chat\n"
-                            "🔹 `.ping` : Check bot response latency & uptime\n"
-                            "🔹 `.status` : System health & processed stats\n"
-                            "🔹 `.ai <query>` : Force trigger AI reply\n"
+                            "🔹 `.aioff` : Turn OFF auto AI for 1 hour\n"
+                            "🔹 `.aion` : Turn ON auto AI immediately\n"
+                            "🔹 `.summary` : Summarize recent chat\n"
+                            "🔹 `.ping` : Check bot latency\n"
+                            "🔹 `.status` : System health (Owner only)\n"
+                            "🔹 `.ai <query>` : Force AI response\n"
                             "----------------------------"
                         )
                         client.direct_send(help_menu, thread_ids=[thread_id])
                         processed_message_ids.add(msg_id)
                         continue
 
-                    # 🏓 COMMAND 1: .ping
                     elif text_content.lower() == ".ping":
                         start_ping = time.time()
                         ping_time = round((time.time() - start_ping) * 1000, 2)
@@ -271,122 +256,75 @@ def start_bot_loop():
                         processed_message_ids.add(msg_id)
                         continue
 
-                    # 📊 COMMAND 2: .status (Owner Only Protection)
                     elif text_content.lower() == ".status":
                         if is_self_message:
                             uptime_min = round((time.time() - START_TIME) / 60, 1)
-                            disabled_count = len(ai_disabled_threads)
-                            status_text = (
-                                "🤖 **Professional Userbot Status**\n"
-                                "----------------------------\n"
-                                f"✅ **State:** Fully Operational\n"
-                                f"🧠 **AI Engine:** Multi-Tier (Groq/Pollinations)\n"
-                                f"⏱️ **Uptime:** {uptime_min} Minutes\n"
-                                f"⏸️ **Paused AI Chats:** {disabled_count}\n"
-                                f"📩 **Processed DMs:** {len(processed_message_ids)}\n"
-                                "----------------------------"
-                            )
+                            status_text = f"🤖 **Status:** Operational\n⏱️ **Uptime:** {uptime_min}m\n📩 **Processed:** {len(processed_message_ids)}"
                             client.direct_send(status_text, thread_ids=[thread_id])
                         processed_message_ids.add(msg_id)
                         continue
 
-                    # 🔴 COMMAND 3: .aioff (Turns OFF AI for 1 hour)
                     elif text_content.lower() == ".aioff":
                         ai_disabled_threads[thread_id] = now
-                        msg = "🔴 Auto AI reply turned OFF for this chat for 1 hour."
-                        client.direct_send(msg, thread_ids=[thread_id])
+                        client.direct_send("🔴 Auto AI reply turned OFF for this chat for 1 hour.", thread_ids=[thread_id])
                         processed_message_ids.add(msg_id)
-                        print(f"[AI TOGGLE] Disabled AI for thread {thread_id} for 1 hr", flush=True)
                         continue
 
-                    # 🟢 COMMAND 4: .aion (Forces AI back ON)
                     elif text_content.lower() == ".aion":
                         if thread_id in ai_disabled_threads:
                             del ai_disabled_threads[thread_id]
-                        msg = "🟢 Auto AI reply turned ON for this chat."
-                        client.direct_send(msg, thread_ids=[thread_id])
+                        client.direct_send("🟢 Auto AI reply turned ON for this chat.", thread_ids=[thread_id])
                         processed_message_ids.add(msg_id)
-                        print(f"[AI TOGGLE] Enabled AI for thread {thread_id}", flush=True)
                         continue
 
-                    # 📝 COMMAND 5: .summary (Summarize chat history)
                     elif text_content.lower() == ".summary":
-                        print(f"[SUMMARY REQ] Generating thread summary for {thread_id}", flush=True)
                         try:
                             recent_msgs = thread.messages[:10]
-                            chat_history = []
-                            for m in reversed(recent_msgs):
-                                sender = "Lakshit" if str(m.user_id) == my_user_id else "User"
-                                text = m.text or "[Non-text message]"
-                                chat_history.append(f"{sender}: {text}")
-
-                            full_history_str = "\n".join(chat_history)
-                            summary_prompt = f"Summarize the following Instagram conversation briefly into bullet points:\n\n{full_history_str}"
-
-                            summary_output = generate_ai_response(summary_prompt)
+                            chat_history = [f"{'Lakshit' if str(m.user_id) == my_user_id else 'User'}: {m.text or ''}" for m in reversed(recent_msgs)]
+                            summary_output = generate_ai_response("Summarize this chat in 2 short points:\n" + "\n".join(chat_history))
                             send_split_message(client, f"📊 **Chat Summary:**\n\n{summary_output}", thread_id)
                         except Exception as sum_err:
-                            print(f"[SUMMARY ERROR] {sum_err}", flush=True)
-                            client.direct_send("Could not generate summary for this chat.", thread_ids=[thread_id])
-                        
+                            client.direct_send("Could not generate summary.", thread_ids=[thread_id])
                         processed_message_ids.add(msg_id)
                         continue
 
-                    # 🤖 COMMAND 6: .ai <query> (Manual AI command)
                     elif text_content.lower().startswith(".ai "):
                         query = text_content[4:].strip()
                         ai_output = generate_ai_response(query)
-                        try:
-                            send_split_message(client, ai_output, thread_id)
-                            processed_message_ids.add(msg_id)
-                            time.sleep(2)
-                        except Exception as send_err:
-                            print(f"[SEND ERROR] Failed to send AI response: {send_err}", flush=True)
+                        send_split_message(client, ai_output, thread_id)
+                        processed_message_ids.add(msg_id)
                         continue
 
-                    # ---------------------------------------------------------
-                    # 🤖 ROUTE B: DEFAULT AUTOMATIC AI CHAT
-                    # ---------------------------------------------------------
-
-                    # 1. Ignore if sender is YOU (Self-message safeguard)
+                    # 🤖 DEFAULT AUTOMATIC AI CHAT
                     if is_self_message:
                         processed_message_ids.add(msg_id)
                         continue
 
-                    # 2. Check 1-Hour Auto-Re-Enable Timer logic
                     if thread_id in ai_disabled_threads:
                         disabled_time = ai_disabled_threads[thread_id]
                         if (now - disabled_time) > COOLDOWN_PERIOD:
-                            # 1 Hour passed! Automatically re-enable
                             del ai_disabled_threads[thread_id]
-                            print(f"[AUTO RE-ENABLE] 1 Hour passed. Auto AI re-enabled for thread {thread_id}", flush=True)
                         else:
-                            # Still within the 1-hour OFF window
                             processed_message_ids.add(msg_id)
                             continue
 
-                    # 3. Generate Natural Human-like AI Response
-                    print(f"[AUTO AI DM] Responding to message from sender {sender_id}", flush=True)
+                    # Generate AI response (Ultra Fast)
                     ai_reply = generate_ai_response(text_content)
-                    try:
-                        send_split_message(client, ai_reply, thread_id)
-                        processed_message_ids.add(msg_id)
-                        time.sleep(2)
-                    except Exception as send_err:
-                        print(f"[SEND ERROR] Failed to send Auto AI reply: {send_err}", flush=True)
+                    send_split_message(client, ai_reply, thread_id)
+                    processed_message_ids.add(msg_id)
 
                 except Exception as thread_err:
-                    print(f"[THREAD ERROR] Softly handled: {thread_err}", flush=True)
+                    print(f"[THREAD ERROR] {thread_err}", flush=True)
                     continue
 
             if len(processed_message_ids) > 1500:
                 processed_message_ids.clear()
 
-            time.sleep(12)
+            time.sleep(3)  # Ultra fast 3-second inbox check cycle
 
         except Exception as loop_err:
-            print(f"[MAIN LOOP RECOVERY] Handled outer error: {loop_err}", flush=True)
-            time.sleep(15)
+            print(f"[MAIN LOOP ERROR] {loop_err}", flush=True)
+            time.sleep(5)
 
 
 # Background runner initialization
@@ -396,3 +334,4 @@ bot_thread.start()
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+        

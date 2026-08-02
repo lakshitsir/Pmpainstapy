@@ -20,7 +20,7 @@ def home():
     return "Instagram Professional Userbot Service - Fully Operational", 200
 
 # ---------------------------------------------------------
-# 2. ULTRA-FAST & LOW-TOKEN AI ENGINE (Groq + Pollinations + Gemini)
+# 2. AI ENGINE SETUPS
 # ---------------------------------------------------------
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
@@ -33,17 +33,17 @@ if GEMINI_API_KEY:
     except Exception as e:
         print(f"[INIT ERROR] Gemini SDK setup failed: {e}", flush=True)
 
-# 🎯 STRICT IDENTITY + ULTRA SHORT LOW-TOKEN SYSTEM PROMPT
+# 🎯 CHILL, NATURAL & SMART SYSTEM PROMPT
 HUMAN_SYSTEM_PROMPT = (
-    "You are the official AI Assistant of Lakshit. "
-    "NEVER say you are Lakshit. You are only his AI Assistant. "
-    "Reply in super fast, polite, concise Hinglish. Use 'aap' or 'bhai'. "
-    "Keep answers under 15-20 words max to save speed and tokens."
+    "You are the chill AI Assistant of Lakshit. "
+    "NEVER claim to be Lakshit yourself. "
+    "Talk like a normal, cool Indian guy using casual Hinglish (bhai, bro, haan, dekho). "
+    "If someone asks for Lakshit or wants to give a message, tell them nicely: 'Lakshit abhi offline hai, aap apna message chhod do, wo aate hi check kar lega!' "
+    "Keep replies ultra-short (1 sentence max), fast, natural and friendly. Don't act robotic or formal."
 )
 
-
 def get_groq_ai(prompt: str) -> str:
-    """Primary Ultra-Fast AI via Groq API."""
+    """Primary High-Speed AI via Groq API."""
     if not GROQ_API_KEY:
         return None
     try:
@@ -58,22 +58,19 @@ def get_groq_ai(prompt: str) -> str:
                 {"role": "system", "content": HUMAN_SYSTEM_PROMPT},
                 {"role": "user", "content": prompt}
             ],
-            "temperature": 0.5,
-            "max_tokens": 80  # Strict low-token budget for fast generation
+            "temperature": 0.6,
+            "max_tokens": 70
         }
         res = requests.post(url, headers=headers, json=data, timeout=5)
         if res.status_code == 200:
             result = res.json()
             return result['choices'][0]['message']['content'].strip()
-        else:
-            print(f"[GROQ ERROR] Status Code: {res.status_code} | {res.text}", flush=True)
     except Exception as err:
         print(f"[GROQ FAIL] {err}", flush=True)
     return None
 
-
 def get_pollinations_openai(prompt: str) -> str:
-    """Secondary Fast AI Engine (Pollinations)."""
+    """Secondary AI Engine."""
     try:
         full_prompt = f"{HUMAN_SYSTEM_PROMPT}\n\nUser message: {prompt}"
         encoded_prompt = urllib.parse.quote(full_prompt)
@@ -85,9 +82,8 @@ def get_pollinations_openai(prompt: str) -> str:
         print(f"[POLLINATIONS ERROR] {err}", flush=True)
     return None
 
-
 def get_gemini_ai(prompt: str) -> str:
-    """Tertiary Backup AI Engine (Gemini 2.0 Flash)."""
+    """Tertiary Backup AI Engine."""
     if ai_client:
         try:
             full_prompt = f"{HUMAN_SYSTEM_PROMPT}\n\nUser message: {prompt}"
@@ -101,9 +97,8 @@ def get_gemini_ai(prompt: str) -> str:
             print(f"[GEMINI FAIL] {err}", flush=True)
     return None
 
-
-def generate_ai_response(prompt: str) -> str:
-    """Multi-Tier Auto Switcher + Signature Tag."""
+def generate_ai_response(prompt: str, is_first_msg: bool = False) -> str:
+    """Generates AI response and attaches Offline Notice on FIRST message."""
     raw_response = get_groq_ai(prompt)
 
     if not raw_response:
@@ -113,13 +108,16 @@ def generate_ai_response(prompt: str) -> str:
         raw_response = get_gemini_ai(prompt)
 
     if not raw_response:
-        raw_response = "Lakshit bhai abhi busy hain, aapka message un tak pahuncha dunga!"
+        raw_response = "Lakshit bhai abhi offline hain, aap apna message yahan chhod do!"
 
-    return f"{raw_response}\n\n~ AI Generated"
-
+    # Agar CHAT MEIN PEHLA MESSAGE HAIN, to offline line append hogi
+    if is_first_msg:
+        return f"{raw_response}\n\nLakshit is currently offline 🤧\n\n~ AI Generated"
+    else:
+        return f"{raw_response}\n\n~ AI Generated"
 
 def send_split_message(client, text: str, thread_id: str, max_length: int = 900):
-    """Bypasses Instagram length limitations safely."""
+    """Bypasses Instagram length limitations."""
     if len(text) <= max_length:
         client.direct_send(text, thread_ids=[thread_id])
         return
@@ -129,15 +127,14 @@ def send_split_message(client, text: str, thread_id: str, max_length: int = 900)
         client.direct_send(chunk, thread_ids=[thread_id])
         time.sleep(1)
 
-
 # ---------------------------------------------------------
 # 3. INSTAGRAM PROFESSIONAL USERBOT ENGINE
 # ---------------------------------------------------------
-COOLDOWN_PERIOD = 3600  # Exact 1 Hour
+COOLDOWN_PERIOD = 3600  # 1 Hour
 ai_disabled_threads = {}
 processed_message_ids = set()
+active_thread_sessions = set() # Track chats where first reply was sent
 bot_started = False
-
 
 def start_bot_loop():
     global bot_started
@@ -146,11 +143,11 @@ def start_bot_loop():
     bot_started = True
 
     time.sleep(2)
-    print("[SYSTEM] Booting High-Speed Instagram Userbot...", flush=True)
+    print("[SYSTEM] Booting Optimized Instagram Userbot...", flush=True)
 
     raw_session = os.environ.get("INSTA_SESSION_JSON")
     if not raw_session:
-        print("[CRITICAL ERROR] INSTA_SESSION_JSON missing in Environment Variables!", flush=True)
+        print("[CRITICAL ERROR] INSTA_SESSION_JSON missing!", flush=True)
         return
 
     client = Client()
@@ -308,8 +305,13 @@ def start_bot_loop():
                             processed_message_ids.add(msg_id)
                             continue
 
-                    # Generate AI response (Ultra Fast)
-                    ai_reply = generate_ai_response(text_content)
+                    # Check if this is the first message in this chat session
+                    is_first = thread_id not in active_thread_sessions
+                    ai_reply = generate_ai_response(text_content, is_first_msg=is_first)
+                    
+                    # Mark session as active so next replies don't repeat the offline line
+                    active_thread_sessions.add(thread_id)
+
                     send_split_message(client, ai_reply, thread_id)
                     processed_message_ids.add(msg_id)
 
@@ -320,12 +322,11 @@ def start_bot_loop():
             if len(processed_message_ids) > 1500:
                 processed_message_ids.clear()
 
-            time.sleep(3)  # Ultra fast 3-second inbox check cycle
+            time.sleep(3)
 
         except Exception as loop_err:
             print(f"[MAIN LOOP ERROR] {loop_err}", flush=True)
             time.sleep(5)
-
 
 # Background runner initialization
 bot_thread = Thread(target=start_bot_loop, daemon=True)
@@ -334,4 +335,3 @@ bot_thread.start()
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
-        
